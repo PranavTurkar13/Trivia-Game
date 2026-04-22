@@ -7,7 +7,12 @@ const GameManager = require('./gameManager');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  cors: {
+    origin: "*", // later replace with your Vercel URL
+    methods: ["GET", "POST"]
+  }
+});
 const gm = new GameManager();
 
 app.use(express.static(path.join(__dirname, 'public')));
