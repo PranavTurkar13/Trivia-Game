@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Drawing Round</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700;800&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet"/>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    * { font-family: 'DM Sans', sans-serif; }
+    .display { font-family: 'Space Grotesk', sans-serif; }
+    body { background: #0a0a0f; color: #fff; }
+    #canvas { cursor: crosshair; touch-action: none; border-radius: 12px; background: #fff; }
+    .tool-btn { border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 6px 14px; font-size: 13px; transition: all 0.15s; }
+    .tool-btn.active, .tool-btn:hover { border-color: #a3e635; color: #a3e635; }
+    .chat-msg { padding: 6px 12px; border-radius: 8px; font-size: 13px; background: rgba(255,255,255,0.05); margin-bottom: 6px; }
+    .chat-msg.correct { background: rgba(163,230,53,0.15); color: #a3e635; font-weight: 600; }
+    #guess-input { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #fff; outline: none; border-radius: 10px; padding: 10px 14px; width: 100%; font-size: 14px; }
+    #guess-input:focus { border-color: #a3e635; }
+    #guess-input::placeholder { color: rgba(255,255,255,0.3); }
+  </style>
+</head>
+<body class="min-h-screen p-4">
+  <div class="max-w-5xl mx-auto">
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <span id="drawer-label" class="text-white/40 text-sm"></span>
+        <div id="secret-word" class="display font-black text-2xl text-lime-400 hidden"></div>
+        <div id="word-blanks" class="display font-black text-2xl tracking-widest"></div>
+      </div>
+      <div id="draw-timer" class="display font-black text-4xl text-lime-400"></div>
+    </div>
+
+    <div class="flex gap-4">
+      <!-- Canvas area -->
+      <div class="flex-1">
+        <!-- Tools (only shown to drawer) -->
+        <div id="tools" class="hidden flex items-center gap-2 mb-3 flex-wrap">
+          <button class="tool-btn active" id="btn-pen" onclick="setTool('pen')">Pen</button>
+          <button class="tool-btn" id="btn-eraser" onclick="setTool('eraser')">Eraser</button>
+          <input type="color" id="color-picker" value="#000000" class="w-8 h-8 rounded cursor-pointer border-0"/>
+          <select id="brush-size" class="tool-btn bg-transparent" style="color:inherit">
+            <option value="4">Small</option>
+            <option value="10" selected>Medium</option>
+            <option value="24">Large</option>
+          </select>
+          <button class="tool-btn" onclick="clearCanvas()">Clear</button>
+        </div>
+
+        <canvas id="canvas" width="640" height="440" style="max-width:100%"></canvas>
+      </div>
+
+      <!-- Chat / guesses -->
+      <div class="w-64 flex flex-col">
+        <div class="text-xs text-white/30 uppercase tracking-widest mb-3">Guesses</div>
+        <div id="chat-box" class="flex-1 overflow-y-auto space-y-1 mb-3" style="max-height:380px"></div>
+        <div id="guess-area">
+          <input id="guess-input" placeholder="Type your guess..." autocomplete="off"/>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const socket = io();
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    let isDrawing = false;
+    let isDrawer = false;
+    let tool = 'pen';
+    let lastX = 0, lastY = 0;
+
+    // ── Read everything from localStorage (set before navigation) ──
+    const roomCode     = localStorage.getItem('roomCode');
+    const isDrawerFlag = localStorage.getItem('isDrawer') === 'true';
+    const drawerWord   = localStorage.getItem('drawerWord');
+    const drawerName   = localStorage.getItem('drawerName');
+    const startTime    = parseInt(localStorage.getItem('drawStartTime') || Date.now());
+    const timeLimit    = parseInt(localStorage.getItem('drawTimeLimit') || '60');
+
+    // ── Apply drawer state immediately, no socket needed ──
+    if (isDrawerFlag && drawerWord) {
+      isDrawer = true;
+      document.getElementById('tools').classList.remove('hidden');
+      document.getElementById('secret-word').textContent = 'Draw: ' + drawerWord;
+      document.getElementById('secret-word').classList.remove('hidden');
+      document.getElementById('word-blanks').classList.add('hidden');
+      document.getElementById('guess-area').innerHTML =
+        '<p class="text-white/30 text-sm text-center">You are drawing!</p>';
+    }
+
+    // ── Show drawer name for guessers ──
+    if (!isDrawerFlag && drawerName) {
+      document.getElementById('drawer-label').textContent = drawerName + ' is drawing...';
+    }
+
+    // ── Start timer from elapsed time ──
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    let t = Math.max(timeLimit - elapsed, 0);
+    document.getElementById('draw-timer').textContent = t;
+    const timerIv = setInterval(() => {
+      t--;
+      document.getElementById('draw-timer').textContent = Math.max(t, 0);
+      if (t <= 0) clearInterval(timerIv);
+    }, 1000);
+
+    // ── Re-join the socket room with the new socket ID ──
+    socket.emit('rejoin-draw', { roomCode });
+
+    // ── Drawing logic ──
+    function getPos(e) {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+    }
+
+    function drawStroke(stroke) {
+      ctx.beginPath();
+      ctx.moveTo(stroke.x0, stroke.y0);
+      ctx.lineTo(stroke.x1, stroke.y1);
+      ctx.strokeStyle = stroke.color;
+      ctx.lineWidth = stroke.size;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+    }
+
+    canvas.addEventListener('mousedown', e => {
+      if (!isDrawer) return;
+      isDrawing = true;
+      const p = getPos(e);
+      lastX = p.x; lastY = p.y;
+    });
+
+    canvas.addEventListener('mousemove', e => {
+      if (!isDrawing || !isDrawer) return;
+      const p = getPos(e);
+      const color = tool === 'eraser' ? '#ffffff' : document.getElementById('color-picker').value;
+      const size = parseInt(document.getElementById('brush-size').value);
+      const stroke = { x0: lastX, y0: lastY, x1: p.x, y1: p.y, color, size };
+      drawStroke(stroke);
+      socket.emit('draw-stroke', { roomCode, stroke });
+      lastX = p.x; lastY = p.y;
+    });
+
+    canvas.addEventListener('mouseup', () => isDrawing = false);
+    canvas.addEventListener('mouseleave', () => isDrawing = false);
+
+    // Touch support
+    canvas.addEventListener('touchstart', e => {
+      if (!isDrawer) return;
+      e.preventDefault();
+      isDrawing = true;
+      const p = getPos(e);
+      lastX = p.x; lastY = p.y;
+    });
+
+    canvas.addEventListener('touchmove', e => {
+      if (!isDrawing || !isDrawer) return;
+      e.preventDefault();
+      const p = getPos(e);
+      const color = tool === 'eraser' ? '#ffffff' : document.getElementById('color-picker').value;
+      const size = parseInt(document.getElementById('brush-size').value);
+      const stroke = { x0: lastX, y0: lastY, x1: p.x, y1: p.y, color, size };
+      drawStroke(stroke);
+      socket.emit('draw-stroke', { roomCode, stroke });
+      lastX = p.x; lastY = p.y;
+    });
+
+    canvas.addEventListener('touchend', () => isDrawing = false);
+
+    function setTool(t) {
+      tool = t;
+      document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById('btn-' + t).classList.add('active');
+    }
+    window.setTool = setTool;
+
+    function clearCanvas() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      socket.emit('canvas-clear', { roomCode });
+    }
+    window.clearCanvas = clearCanvas;
+
+    // ── Socket events (for real-time updates while on this page) ──
+    socket.on('canvas-stroke', drawStroke);
+    socket.on('canvas-cleared', () => ctx.clearRect(0, 0, canvas.width, canvas.height));
+
+    socket.on('guess-message', ({ name, text }) => addChat(name, text, false));
+    socket.on('guess-correct', ({ name, points, word }) => {
+      addChat(name, `guessed it! (+${points} pts)`, true);
+      document.getElementById('word-blanks').textContent = word;
+    });
+
+    socket.on('drawing-scores', ({ leaderboard }) => {
+      // Round ended by host — show a simple overlay
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(10,10,15,0.95);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:999';
+      overlay.innerHTML = `
+        <div class="display font-black text-4xl text-lime-400 mb-8">Round Over!</div>
+        <div style="width:100%;max-width:400px;padding:0 20px">
+          ${leaderboard.map((p, i) => `
+            <div style="display:flex;align-items:center;gap:16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:16px 20px;margin-bottom:10px">
+              <span class="display font-black text-2xl" style="color:${i===0?'#a3e635':i===1?'rgba(255,255,255,0.5)':i===2?'#f59e0b':'rgba(255,255,255,0.25)'}">${i+1}</span>
+              <span style="flex:1;font-weight:500">${p.name}</span>
+              <span class="display font-black text-lg" style="color:#a3e635">${p.score}</span>
+            </div>`).join('')}
+        </div>
+        <p style="margin-top:32px;color:rgba(255,255,255,0.3);font-size:14px">Waiting for host...</p>
+      `;
+      document.body.appendChild(overlay);
+    });
+
+    function addChat(name, text, correct) {
+      const box = document.getElementById('chat-box');
+      const div = document.createElement('div');
+      div.className = 'chat-msg' + (correct ? ' correct' : '');
+      div.innerHTML = `<span style="opacity:0.5">${name}:</span> ${text}`;
+      box.appendChild(div);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    document.getElementById('guess-input')?.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && e.target.value.trim()) {
+        socket.emit('submit-guess', { roomCode, guess: e.target.value.trim() });
+        e.target.value = '';
+      }
+    });
+  </script>
+</body>
+</html>

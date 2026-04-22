@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>QuizBlitz — Host</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700;800&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet"/>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    * { font-family: 'DM Sans', sans-serif; box-sizing: border-box; }
+    .display { font-family: 'Space Grotesk', sans-serif; }
+    body { background: #0a0a0f; margin: 0; }
+    .noise { position: fixed; inset: 0; pointer-events: none; z-index: 0; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E"); }
+    .card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); }
+    .btn-primary { background: #a3e635; color: #0a0a0f; border: none; font-family: 'Space Grotesk', sans-serif; font-weight: 700; cursor: pointer; transition: transform 0.15s, box-shadow 0.15s, background 0.15s; }
+    .btn-primary:hover { background: #bef264; transform: translateY(-2px); box-shadow: 0 8px 30px rgba(163,230,53,0.35); }
+    .btn-primary:disabled { opacity: 0.3; transform: none; box-shadow: none; cursor: not-allowed; }
+    .btn-outline { border: 1px solid rgba(255,255,255,0.15); color: #fff; background: transparent; font-family: 'Space Grotesk', sans-serif; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+    .btn-outline:hover { border-color: rgba(163,230,53,0.5); color: #a3e635; }
+    .btn-danger { border: 1px solid rgba(239,68,68,0.3); color: #ef4444; background: transparent; font-family: 'Space Grotesk', sans-serif; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+    .btn-danger:hover { border-color: #ef4444; background: rgba(239,68,68,0.1); }
+    .screen { display: none; }
+    .screen.active { display: flex; }
+    @keyframes fadeUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
+    .animate-fade-up { animation: fadeUp 0.45s ease forwards; }
+    .player-chip { background: rgba(163,230,53,0.1); border: 1px solid rgba(163,230,53,0.2); color: #a3e635; animation: fadeUp 0.3s ease forwards; }
+    .dot { animation: pulse-dot 1.2s infinite; }
+    .dot:nth-child(2) { animation-delay: 0.2s; }
+    .dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    .code-char { background: rgba(163,230,53,0.1); border: 1px solid rgba(163,230,53,0.25); color: #a3e635; }
+    .lb-row { display:flex; align-items:center; gap:16px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); border-radius:12px; padding:14px 20px; margin-bottom:10px; animation:fadeUp 0.4s ease forwards; opacity:0; }
+    #screen-drawing { flex-direction: column; padding: 24px; }
+    .chat-msg { padding: 7px 12px; border-radius: 8px; font-size: 13px; background: rgba(255,255,255,0.05); margin-bottom: 6px; color: rgba(255,255,255,0.8); }
+    .chat-msg.correct { background: rgba(163,230,53,0.15); color: #a3e635; font-weight: 600; }
+    .chat-msg .sender { color: rgba(255,255,255,0.35); font-size: 11px; display: block; margin-bottom: 1px; }
+  </style>
+</head>
+<body class="min-h-screen text-white">
+  <div class="noise"></div>
+
+  <!-- LOBBY -->
+  <div id="screen-lobby" class="screen active flex-col items-center justify-center min-h-screen px-4 relative z-10">
+    <div class="animate-fade-up text-center mb-8">
+      <p class="text-white/30 text-xs uppercase tracking-widest mb-3">Host Panel</p>
+      <div class="display text-5xl font-black tracking-tighter">Quiz<span class="text-lime-400">Blitz</span></div>
+    </div>
+    <div id="lobby-waiting" class="text-center">
+      <div class="flex items-center justify-center gap-1 mb-2">
+        <span class="w-2 h-2 rounded-full bg-lime-400 dot"></span>
+        <span class="w-2 h-2 rounded-full bg-lime-400 dot"></span>
+        <span class="w-2 h-2 rounded-full bg-lime-400 dot"></span>
+        <span class="ml-2 text-white/40 text-sm">Creating room...</span>
+      </div>
+    </div>
+    <div id="lobby-room" class="hidden w-full max-w-lg animate-fade-up">
+      <div class="card rounded-2xl p-8 text-center mb-6">
+        <p class="text-white/30 text-xs uppercase tracking-widest mb-4">Share this room code</p>
+        <div id="room-code-display" class="flex justify-center gap-2 mb-4"></div>
+        <p class="text-white/25 text-xs">Players go to <span class="text-lime-400">localhost:4000</span></p>
+      </div>
+      <div class="card rounded-2xl p-6 mb-6">
+        <div class="flex items-center justify-between mb-4">
+          <p class="display font-bold text-sm text-white/60 uppercase tracking-widest">Players joined</p>
+          <span id="player-count" class="text-lime-400 display font-black">0</span>
+        </div>
+        <div id="player-chips" class="flex flex-wrap gap-2 min-h-12"></div>
+      </div>
+      <button id="btn-start" class="btn-primary w-full rounded-xl py-4 text-base" disabled>
+        Start Game (need at least 1 player)
+      </button>
+    </div>
+  </div>
+
+  <!-- QUESTION -->
+  <div id="screen-question" class="screen flex-col items-center justify-center min-h-screen px-6 relative z-10">
+    <div class="w-full max-w-2xl">
+      <div class="flex items-center justify-between mb-6">
+        <span id="q-counter" class="text-white/30 display font-bold text-sm uppercase tracking-widest"></span>
+        <div id="timer-host" class="display font-black text-4xl text-lime-400"></div>
+      </div>
+      <div id="q-text-host" class="display font-black text-3xl leading-tight mb-10 text-white"></div>
+      <div id="options-host" class="grid grid-cols-2 gap-4 mb-10"></div>
+      <div class="flex items-center justify-between">
+        <div class="text-white/30 text-sm"><span id="answer-count">0</span> answered</div>
+        <button id="btn-next" class="btn-outline rounded-xl px-6 py-3 text-sm" disabled>Next question →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TRIVIA ROUND RESULT + 3-button menu -->
+  <div id="screen-result" class="screen flex-col items-center justify-center min-h-screen px-6 relative z-10">
+    <div class="w-full max-w-lg text-center">
+      <div class="display font-black text-3xl mb-2">Round Over</div>
+      <div id="host-correct-answer" class="text-lime-400 text-lg mb-6"></div>
+      <div id="host-leaderboard" class="mb-8"></div>
+      <div class="space-y-3">
+        <button id="btn-next-q" class="btn-primary w-full rounded-xl py-4 text-base">
+          Next Trivia Question →
+        </button>
+        <button id="btn-drawing-round" class="btn-outline w-full rounded-xl py-3 text-sm">
+          Drawing Round →
+        </button>
+        <button id="btn-end-game" class="btn-danger w-full rounded-xl py-3 text-sm">
+          End Game &amp; Show Final Results
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DRAWING ROUND HOST VIEW -->
+  <div id="screen-drawing" class="screen relative z-10">
+    <div class="flex items-start justify-between mb-6 flex-wrap gap-4">
+      <div>
+        <p class="text-white/30 text-xs uppercase tracking-widest mb-1">Drawing round</p>
+        <div id="host-drawer-label" class="display font-black text-3xl text-white mb-1"></div>
+        <div id="host-draw-progress" class="text-white/40 text-sm"></div>
+      </div>
+      <div class="text-right">
+        <div id="host-draw-timer" class="display font-black text-5xl text-lime-400 leading-none"></div>
+        <p class="text-white/30 text-xs mt-1">seconds left</p>
+      </div>
+    </div>
+    <div style="display:flex;gap:24px;align-items:flex-start;">
+      <div style="flex:1;">
+        <p class="text-xs text-white/30 uppercase tracking-widest mb-3">Live guesses</p>
+        <div id="host-chat-box" style="height:320px;overflow-y:auto;"></div>
+      </div>
+      <div style="width:260px;">
+        <p class="text-xs text-white/30 uppercase tracking-widest mb-3">Leaderboard</p>
+        <div id="host-live-scores"></div>
+      </div>
+    </div>
+    <div class="mt-6">
+      <button id="btn-end-drawing" class="btn-danger rounded-xl px-6 py-3 text-sm">
+        End Drawing Round Early
+      </button>
+    </div>
+  </div>
+
+  <!-- DRAWING RESULT + 3-button menu -->
+  <div id="screen-drawing-result" class="screen flex-col items-center justify-center min-h-screen px-6 relative z-10">
+    <div class="w-full max-w-lg text-center">
+      <div class="display font-black text-3xl mb-1">Drawing Round Over!</div>
+      <p id="draw-result-word" class="text-lime-400 text-lg mb-8"></p>
+      <div id="draw-result-leaderboard" class="mb-8"></div>
+      <div class="space-y-3">
+        <button id="btn-draw-next-q" class="btn-primary w-full rounded-xl py-4 text-base">
+          Next Trivia Question →
+        </button>
+        <button id="btn-draw-next-draw" class="btn-outline w-full rounded-xl py-3 text-sm">
+          Another Drawing Round →
+        </button>
+        <button id="btn-draw-end-game" class="btn-danger w-full rounded-xl py-3 text-sm">
+          End Game &amp; Show Final Results
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- GAME OVER -->
+  <div id="screen-gameover" class="screen flex-col items-center justify-center min-h-screen px-6 relative z-10 text-center">
+    <div class="display font-black text-5xl tracking-tighter mb-2">Game Over!</div>
+    <p class="text-white/40 mb-10">Final results</p>
+    <div id="host-final-leaderboard" class="w-full max-w-md mb-10"></div>
+    <button onclick="location.reload()" class="btn-primary px-10 py-4 rounded-xl text-base">New Game</button>
+  </div>
+
+  <script>
+    const socket = io();
+    let roomCode = '';
+    let timerInterval = null;
+    let drawTimerInterval = null;
+    let answeredCount = 0;
+
+    function showScreen(id) {
+      document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+      document.getElementById(id).classList.add('active');
+    }
+
+    function renderLeaderboard(containerId, data) {
+      document.getElementById(containerId).innerHTML = data.map((p, i) => `
+        <div class="lb-row" style="animation-delay:${i*0.07}s">
+          <span class="display font-black text-2xl ${i===0?'text-lime-400':i===1?'text-white/50':i===2?'text-amber-500':'text-white/25'}">${i+1}</span>
+          <span style="flex:1;font-weight:500">${p.name}</span>
+          <span class="display font-black text-lg" style="color:#a3e635">${p.score} pts</span>
+        </div>`).join('');
+    }
+
+    function addHostChat(name, text, correct) {
+      const box = document.getElementById('host-chat-box');
+      const div = document.createElement('div');
+      div.className = 'chat-msg' + (correct ? ' correct' : '');
+      div.innerHTML = `<span class="sender">${name}</span>${text}`;
+      box.appendChild(div);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function updateLiveScores(players) {
+      document.getElementById('host-live-scores').innerHTML = [...players]
+        .sort((a,b) => b.score - a.score)
+        .map(p => `
+          <div style="display:flex;justify-content:space-between;padding:10px 16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;margin-bottom:8px">
+            <span style="font-size:14px;color:rgba(255,255,255,0.8)">${p.name}</span>
+            <span style="font-size:14px;font-family:'Space Grotesk',sans-serif;font-weight:700;color:#a3e635">${p.score} pts</span>
+          </div>`).join('');
+    }
+
+    // Lobby
+    socket.emit('host-create-room');
+
+    socket.on('room-created', ({ code }) => {
+      roomCode = code;
+      document.getElementById('lobby-waiting').classList.add('hidden');
+      document.getElementById('lobby-room').classList.remove('hidden');
+      document.getElementById('room-code-display').innerHTML = code.split('').map(c =>
+        `<span class="code-char display font-black text-3xl w-12 h-14 flex items-center justify-center rounded-xl">${c}</span>`
+      ).join('');
+    });
+
+    socket.on('player-list', (players) => {
+      const btn = document.getElementById('btn-start');
+      document.getElementById('player-chips').innerHTML = players.map(p =>
+        `<span class="player-chip display font-bold text-sm px-4 py-2 rounded-full">${p.name}</span>`
+      ).join('');
+      document.getElementById('player-count').textContent = players.length;
+      btn.disabled = players.length === 0;
+      btn.textContent = players.length === 0
+        ? 'Start Game (need at least 1 player)'
+        : `Start Game with ${players.length} player${players.length > 1 ? 's' : ''}`;
+      updateLiveScores(players);
+    });
+
+    document.getElementById('btn-start').addEventListener('click', () => {
+      socket.emit('host-start-game', { roomCode });
+    });
+
+    // Trivia
+    socket.on('new-question', ({ text, options, number, total, timeLimit }) => {
+      showScreen('screen-question');
+      answeredCount = 0;
+      document.getElementById('answer-count').textContent = '0';
+      document.getElementById('q-counter').textContent = `Question ${number} / ${total}`;
+      document.getElementById('q-text-host').textContent = text;
+      const colors = ['bg-blue-500/20 border-blue-500/40','bg-purple-500/20 border-purple-500/40','bg-amber-500/20 border-amber-500/40','bg-pink-500/20 border-pink-500/40'];
+      const labels = ['A','B','C','D'];
+      document.getElementById('options-host').innerHTML = options.map((opt,i) => `
+        <div class="border ${colors[i]} rounded-xl px-5 py-4">
+          <span class="display font-black text-sm text-white/40 mr-2">${labels[i]}</span>
+          <span class="text-white/80 text-sm">${opt}</span>
+        </div>`).join('');
+      const btn = document.getElementById('btn-next');
+      btn.disabled = true;
+      let t = timeLimit;
+      document.getElementById('timer-host').textContent = t;
+      clearInterval(timerInterval);
+      timerInterval = setInterval(() => {
+        t--;
+        document.getElementById('timer-host').textContent = t;
+        if (t <= 0) { clearInterval(timerInterval); btn.disabled = false; }
+      }, 1000);
+    });
+
+    socket.on('answer-received', () => {
+      answeredCount++;
+      document.getElementById('answer-count').textContent = answeredCount;
+    });
+
+    socket.on('round-over', ({ correctAnswer, leaderboard }) => {
+      clearInterval(timerInterval);
+      document.getElementById('host-correct-answer').textContent = correctAnswer;
+      renderLeaderboard('host-leaderboard', leaderboard);
+      showScreen('screen-result');
+    });
+
+    document.getElementById('btn-next').addEventListener('click', () => socket.emit('host-next-question', { roomCode }));
+    document.getElementById('btn-next-q').addEventListener('click', () => socket.emit('host-next-question', { roomCode }));
+    document.getElementById('btn-drawing-round').addEventListener('click', () => socket.emit('host-start-drawing', { roomCode }));
+    document.getElementById('btn-end-game').addEventListener('click', () => socket.emit('host-force-end', { roomCode }));
+
+    // Drawing round
+    socket.on('drawing-round-start', ({ drawerName, timeLimit, drawerNumber, totalDrawers }) => {
+      document.getElementById('host-chat-box').innerHTML = '';
+      document.getElementById('host-drawer-label').textContent = drawerName + ' is drawing';
+      document.getElementById('host-draw-progress').textContent = `Drawer ${drawerNumber} of ${totalDrawers} — word hidden from host`;
+      document.getElementById('host-draw-timer').style.color = '#a3e635';
+
+      clearInterval(drawTimerInterval);
+      let t = timeLimit;
+      document.getElementById('host-draw-timer').textContent = t;
+      drawTimerInterval = setInterval(() => {
+        t--;
+        document.getElementById('host-draw-timer').textContent = Math.max(t, 0);
+        if (t <= 10) document.getElementById('host-draw-timer').style.color = '#ef4444';
+        if (t <= 0) {
+          clearInterval(drawTimerInterval);
+          socket.emit('host-end-drawing', { roomCode });
+        }
+      }, 1000);
+
+      showScreen('screen-drawing');
+    });
+
+    socket.on('guess-message', ({ name, text }) => addHostChat(name, text, false));
+    socket.on('guess-correct',  ({ name, points }) => addHostChat(name, `guessed it! +${points} pts`, true));
+
+    document.getElementById('btn-end-drawing').addEventListener('click', () => {
+      clearInterval(drawTimerInterval);
+      socket.emit('host-end-drawing', { roomCode });
+    });
+
+    socket.on('drawing-scores', ({ leaderboard, word }) => {
+      clearInterval(drawTimerInterval);
+      document.getElementById('draw-result-word').textContent = word ? `The word was: "${word}"` : '';
+      renderLeaderboard('draw-result-leaderboard', leaderboard);
+      showScreen('screen-drawing-result');
+    });
+
+    document.getElementById('btn-draw-next-q').addEventListener('click', () => socket.emit('host-next-question', { roomCode }));
+    document.getElementById('btn-draw-next-draw').addEventListener('click', () => socket.emit('host-start-drawing', { roomCode }));
+    document.getElementById('btn-draw-end-game').addEventListener('click', () => socket.emit('host-force-end', { roomCode }));
+
+    socket.on('game-started', () => {});
+
+    socket.on('game-over', ({ leaderboard }) => {
+      clearInterval(timerInterval);
+      clearInterval(drawTimerInterval);
+      renderLeaderboard('host-final-leaderboard', leaderboard);
+      showScreen('screen-gameover');
+    });
+  </script>
+</body>
+</html>

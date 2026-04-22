@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>QuizBlitz</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700;800&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet"/>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    * { font-family: 'DM Sans', sans-serif; box-sizing: border-box; }
+    .display { font-family: 'Space Grotesk', sans-serif; }
+    body { background: #0a0a0f; margin: 0; }
+
+    .noise {
+      position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+    }
+    .glow-ring {
+      position: fixed; width: 600px; height: 600px; border-radius: 50%; pointer-events: none;
+      background: radial-gradient(circle, rgba(163,230,53,0.07) 0%, transparent 70%);
+      top: 50%; left: 50%; transform: translate(-50%, -60%);
+    }
+    .card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); backdrop-filter: blur(12px); }
+    .inp {
+      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);
+      color: #fff; outline: none; transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .inp::placeholder { color: rgba(255,255,255,0.3); }
+    .inp:focus { border-color: #a3e635; box-shadow: 0 0 0 3px rgba(163,230,53,0.15); }
+    .btn-primary {
+      background: #a3e635; color: #0a0a0f;
+      font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+      transition: transform 0.15s, box-shadow 0.15s, background 0.15s; cursor: pointer; border: none;
+    }
+    .btn-primary:hover { background: #bef264; transform: translateY(-2px); box-shadow: 0 8px 30px rgba(163,230,53,0.35); }
+    .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+
+    .screen { display: none; min-height: 100vh; }
+    .screen.active { display: flex; }
+
+    @keyframes fadeUp { from { opacity:0; transform:translateY(24px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    @keyframes bounceIn { 0%{transform:scale(0.6);opacity:0} 60%{transform:scale(1.1)} 100%{transform:scale(1);opacity:1} }
+
+    .animate-fade-up { animation: fadeUp 0.5s ease forwards; }
+    .anim-delay-1 { animation-delay: 0.1s; opacity: 0; }
+    .anim-delay-2 { animation-delay: 0.2s; opacity: 0; }
+    .bounce-in { animation: bounceIn 0.4s ease forwards; }
+
+    .dot { animation: pulse-dot 1.2s infinite; }
+    .dot:nth-child(2) { animation-delay: 0.2s; }
+    .dot:nth-child(3) { animation-delay: 0.4s; }
+
+    .ans-btn {
+      background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+      color: #fff; cursor: pointer; transition: all 0.18s; text-align: left;
+      font-family: 'DM Sans', sans-serif; width: 100%;
+    }
+    .ans-btn:hover:not(:disabled) { background: rgba(163,230,53,0.12); border-color: rgba(163,230,53,0.5); transform: translateX(4px); }
+    .ans-btn.selected { background: rgba(163,230,53,0.2); border-color: #a3e635; }
+    .ans-btn.correct  { background: rgba(34,197,94,0.25); border-color: #22c55e; }
+    .ans-btn.wrong    { background: rgba(239,68,68,0.2); border-color: #ef4444; }
+    .ans-btn:disabled { cursor: not-allowed; }
+    .timer-ring { transition: stroke-dashoffset 1s linear; }
+
+    /* Leaderboard */
+    .lb-row {
+      display: flex; align-items: center; gap: 16px;
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 12px; padding: 14px 20px; margin-bottom: 10px;
+      animation: fadeUp 0.4s ease forwards; opacity: 0;
+    }
+
+    /* Drawing screen */
+    #screen-draw { flex-direction: column; padding: 16px; position: relative; }
+    #draw-canvas { cursor: crosshair; touch-action: none; border-radius: 12px; background: #fff; display: block; max-width: 100%; }
+
+    .tool-btn {
+      border: 1px solid rgba(255,255,255,0.15); border-radius: 8px;
+      padding: 6px 14px; font-size: 13px; color: #fff; background: transparent;
+      cursor: pointer; transition: all 0.15s; font-family: 'DM Sans', sans-serif;
+    }
+    .tool-btn.active, .tool-btn:hover { border-color: #a3e635; color: #a3e635; }
+
+    .chat-msg {
+      padding: 8px 12px; border-radius: 8px; font-size: 13px;
+      background: rgba(255,255,255,0.05); margin-bottom: 6px;
+      color: rgba(255,255,255,0.85); word-break: break-word; line-height: 1.4;
+    }
+    .chat-msg.correct { background: rgba(163,230,53,0.15); color: #a3e635; font-weight: 600; }
+    .chat-msg .sender { color: rgba(255,255,255,0.4); font-size: 11px; display: block; margin-bottom: 2px; }
+
+    #guess-input {
+      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);
+      color: #fff; outline: none; border-radius: 10px; padding: 10px 14px;
+      width: 100%; font-size: 14px; font-family: 'DM Sans', sans-serif;
+    }
+    #guess-input:focus { border-color: #a3e635; }
+    #guess-input::placeholder { color: rgba(255,255,255,0.3); }
+    #guess-input:disabled { opacity: 0.4; cursor: not-allowed; }
+  </style>
+</head>
+<body class="text-white overflow-x-hidden">
+  <div class="noise"></div>
+  <div class="glow-ring"></div>
+
+  <!-- ══ JOIN ══ -->
+  <div id="screen-join" class="screen active flex-col items-center justify-center w-full px-4 relative z-10">
+    <div class="animate-fade-up text-center mb-10">
+      <div class="display text-6xl font-black tracking-tighter mb-2">Quiz<span class="text-lime-400">Blitz</span></div>
+      <p class="text-white/40 text-sm tracking-widest uppercase">Live multiplayer trivia</p>
+    </div>
+    <div class="card rounded-2xl p-8 w-full max-w-sm animate-fade-up anim-delay-1">
+      <p class="display font-bold text-lg mb-6 text-white/80">Enter your details</p>
+      <div class="space-y-4">
+        <div>
+          <label class="text-xs text-white/40 uppercase tracking-widest mb-2 block">Room Code</label>
+          <input id="inp-code" class="inp w-full rounded-xl px-4 py-3 text-lg uppercase tracking-widest display font-bold" placeholder="ABC123" maxlength="6"/>
+        </div>
+        <div>
+          <label class="text-xs text-white/40 uppercase tracking-widest mb-2 block">Your Name</label>
+          <input id="inp-name" class="inp w-full rounded-xl px-4 py-3 text-base" placeholder="e.g. Riya"/>
+        </div>
+        <button id="btn-join" class="btn-primary w-full rounded-xl py-3.5 text-base mt-2">Join Game →</button>
+        <p id="join-error" class="text-red-400 text-sm text-center hidden"></p>
+      </div>
+    </div>
+    <p class="mt-6 text-white/25 text-xs animate-fade-up anim-delay-2">
+      Hosting? <a href="/host.html" class="text-lime-400 hover:underline">Open host panel</a>
+    </p>
+  </div>
+
+  <!-- ══ LOBBY ══ -->
+  <div id="screen-lobby" class="screen flex-col items-center justify-center w-full px-4 relative z-10">
+    <div class="display text-4xl font-black tracking-tighter mb-2">You're in! <span class="text-lime-400">✓</span></div>
+    <p id="lobby-name" class="text-white/40 mb-8"></p>
+    <div class="card rounded-2xl p-8 w-full max-w-sm text-center">
+      <div class="flex items-center justify-center gap-1 mb-4">
+        <span class="w-2 h-2 rounded-full bg-lime-400 dot"></span>
+        <span class="w-2 h-2 rounded-full bg-lime-400 dot"></span>
+        <span class="w-2 h-2 rounded-full bg-lime-400 dot"></span>
+        <span class="ml-2 text-white/50 text-sm">Waiting for host to start</span>
+      </div>
+      <div id="player-list" class="space-y-2 mt-4"></div>
+    </div>
+  </div>
+
+  <!-- ══ QUESTION ══ -->
+  <div id="screen-question" class="screen flex-col items-center justify-center w-full px-4 relative z-10">
+    <div class="w-full max-w-md">
+      <div class="flex items-center justify-between mb-6">
+        <span id="q-counter" class="text-white/30 text-sm display font-bold uppercase tracking-widest"></span>
+        <div class="relative w-12 h-12">
+          <svg class="w-12 h-12 -rotate-90" viewBox="0 0 48 48">
+            <circle cx="24" cy="24" r="20" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="3"/>
+            <circle id="timer-ring" cx="24" cy="24" r="20" fill="none" stroke="#a3e635" stroke-width="3"
+              stroke-dasharray="125.6" stroke-dashoffset="0" stroke-linecap="round" class="timer-ring"/>
+          </svg>
+          <span id="timer-text" class="absolute inset-0 flex items-center justify-center display font-black text-sm text-lime-400"></span>
+        </div>
+      </div>
+      <div id="q-text" class="display font-bold text-2xl leading-tight mb-8 text-white"></div>
+      <div id="options-grid" class="space-y-3"></div>
+      <div id="answer-feedback" class="hidden mt-6 text-center bounce-in">
+        <div id="feedback-icon" class="text-5xl mb-2"></div>
+        <div id="feedback-text" class="display font-black text-xl"></div>
+        <div id="feedback-points" class="text-white/50 text-sm mt-1"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ ROUND RESULT ══ -->
+  <div id="screen-result" class="screen flex-col items-center justify-center w-full px-4 relative z-10">
+    <div class="w-full max-w-md">
+      <div class="text-center mb-8">
+        <div class="display font-black text-4xl mb-1">Round Over</div>
+        <p class="text-white/40 text-sm">Here's how everyone did</p>
+      </div>
+      <div class="card rounded-2xl px-8 py-5 text-center mb-6">
+        <p class="text-xs text-white/30 uppercase tracking-widest mb-2">Correct answer</p>
+        <p id="correct-answer-text" class="display font-bold text-xl text-lime-400"></p>
+      </div>
+      <p class="text-xs text-white/30 uppercase tracking-widest mb-3">Leaderboard</p>
+      <div id="result-leaderboard"></div>
+      <p class="text-white/25 text-xs text-center mt-6">Waiting for host to continue...</p>
+    </div>
+  </div>
+
+  <!-- ══ DRAWING ROUND ══ -->
+  <div id="screen-draw" class="screen relative z-10">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+      <div>
+        <p id="draw-status-label" class="text-white/40 text-sm mb-1"></p>
+        <div id="draw-secret-word" class="display font-black text-2xl text-lime-400 hidden"></div>
+        <div id="draw-word-hint" class="display font-bold text-lg text-white/50"></div>
+      </div>
+      <div class="text-right">
+        <div id="draw-timer" class="display font-black text-5xl text-lime-400 leading-none"></div>
+        <p class="text-white/30 text-xs mt-1">seconds left</p>
+      </div>
+    </div>
+
+    <!-- Toolbar (drawer only) -->
+    <div id="draw-tools" class="hidden mb-3" style="display:none;align-items:center;gap:8px;flex-wrap:wrap;">
+      <button class="tool-btn active" id="btn-pen" onclick="setTool('pen')">Pen</button>
+      <button class="tool-btn" id="btn-eraser" onclick="setTool('eraser')">Eraser</button>
+      <input type="color" id="color-picker" value="#1a1a1a"
+        style="width:34px;height:34px;border-radius:8px;cursor:pointer;border:1px solid rgba(255,255,255,0.15);padding:2px;background:transparent;"/>
+      <select id="brush-size" class="tool-btn" style="background:#0a0a0f;">
+        <option value="3">Small</option>
+        <option value="9" selected>Medium</option>
+        <option value="22">Large</option>
+      </select>
+      <button class="tool-btn" onclick="clearCanvas()">Clear</button>
+    </div>
+
+    <!-- Canvas + chat -->
+    <div style="display:flex;gap:16px;align-items:flex-start;">
+      <div style="flex:1;min-width:0;">
+        <canvas id="draw-canvas" width="680" height="460"></canvas>
+      </div>
+
+      <!-- Chat panel -->
+      <div style="width:230px;display:flex;flex-direction:column;" id="chat-panel">
+        <p class="text-xs text-white/30 uppercase tracking-widest mb-3">Live guesses</p>
+        <div id="chat-box" style="height:390px;overflow-y:auto;margin-bottom:10px;"></div>
+        <input id="guess-input" placeholder="Your guess + Enter" autocomplete="off"/>
+      </div>
+    </div>
+
+    <!-- Round over overlay -->
+    <div id="draw-over-overlay" style="display:none;position:fixed;inset:0;background:rgba(10,10,15,0.96);flex-direction:column;align-items:center;justify-content:center;z-index:50;">
+      <div class="display font-black text-4xl text-lime-400 mb-2 animate-fade-up">Drawing Round Over!</div>
+      <p id="draw-over-word" class="text-white/40 mb-8 text-sm"></p>
+      <div id="draw-over-leaderboard" style="width:100%;max-width:420px;padding:0 20px;"></div>
+      <p class="text-white/25 text-xs mt-8">Waiting for host...</p>
+    </div>
+  </div>
+
+  <!-- ══ GAME OVER ══ -->
+  <div id="screen-gameover" class="screen flex-col items-center justify-center w-full px-4 relative z-10 text-center">
+    <div class="display font-black text-5xl tracking-tighter mb-2">Game Over!</div>
+    <p class="text-white/40 mb-10">Final leaderboard</p>
+    <div id="final-leaderboard" class="w-full max-w-md mb-10"></div>
+    <button onclick="location.reload()" class="btn-primary px-8 py-3.5 rounded-xl text-base">Play Again</button>
+  </div>
+
+  <script src="/client.js"></script>
+</body>
+</html>
